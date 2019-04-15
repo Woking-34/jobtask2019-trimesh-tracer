@@ -15,6 +15,12 @@
 // - OBJ file loading
 #include "external/objparser.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+#include <vector>
+#include <numeric>
 
 // --------------------------------------------------------------------------
 // "ray/path tracing" bits
@@ -164,17 +170,20 @@ static void TraceImage(TraceData& data)
     float invWidth = 1.0f / data.screenWidth;
     float invHeight = 1.0f / data.screenHeight;
 
-    int rayCount = 0;
+    std::vector<int> rayCountVec(data.screenHeight, 0);
+
     // go over the image: each pixel row
-    for (uint32_t y = 0; y < data.screenHeight; ++y)
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (int y = 0; y < data.screenHeight; ++y)
     {
+        int rayCount = 0;
         // go over the image: each pixel in the row
         uint32_t rngState = y * 9781 + 1;
         for (int x = 0; x < data.screenWidth; ++x)
         {
             float3 col(0, 0, 0);
             // we'll trace N slightly jittered rays for each pixel, to get anti-aliasing, loop over them here
-            for (int s = 0; s < data.samplesPerPixel; s++)
+            for (int s = 0; s < data.samplesPerPixel; ++s)
             {
                 // get a ray from camera, and trace it
                 float u = float(x + RandomFloat01(rngState)) * invWidth;
@@ -190,19 +199,26 @@ static void TraceImage(TraceData& data)
             col.z = sqrtf(col.z);
 
             // our image is bytes in 0-255 range, turn our floats into them here and write into the image
-            image[0] = uint8_t(saturate(col.x) * 255.0f);
-            image[1] = uint8_t(saturate(col.y) * 255.0f);
-            image[2] = uint8_t(saturate(col.z) * 255.0f);
-            image[3] = 255;
-            image += 4;
+            int index = x * 4 + data.screenWidth * 4 * y;
+            image[index + 0] = uint8_t(saturate(col.x) * 255.0f);
+            image[index + 1] = uint8_t(saturate(col.y) * 255.0f);
+            image[index + 2] = uint8_t(saturate(col.z) * 255.0f);
+            image[index + 3] = 255;
         }
+        rayCountVec[y] = rayCount;
     }
-    data.rayCount += rayCount;
+
+    data.rayCount = std::accumulate(rayCountVec.begin(), rayCountVec.end(), 0);
 }
 
 
 int main(int argc, const char** argv)
 {
+#ifdef _OPENMP
+    int thread_num = omp_get_max_threads();
+    printf("omp_get_max_threads: %d\n", thread_num);
+#endif
+
     // initialize timer
     stm_setup();
 
