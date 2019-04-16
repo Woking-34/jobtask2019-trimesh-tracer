@@ -25,9 +25,11 @@ target_include_directories(trimeshtracer_omp
 		${CMAKE_CURRENT_SOURCE_DIR}
 		${CMAKE_CURRENT_SOURCE_DIR}/external
 )
+
 IF(WIN32)
 	set_target_properties(trimeshtracer_omp PROPERTIES COMPILE_FLAGS "/openmp")
 ENDIF(WIN32)
 IF(UNIX AND NOT APPLE)
-	set_target_properties(trimeshtracer_omp PROPERTIES COMPILE_FLAGS "-fopenmp") 
+	set_target_properties(trimeshtracer_omp PROPERTIES COMPILE_FLAGS "-fopenmp")
+	set_target_properties(trimeshtracer_omp PROPERTIES LINK_FLAGS "-fopenmp") 
 ENDIF(UNIX AND NOT APPLE)
