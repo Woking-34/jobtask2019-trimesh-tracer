@@ -107,6 +107,53 @@ static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCo
 }
 
 
+// trace a ray into the scene, and return the final color for it
+static float3 TraceIterative(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
+{
+    (void)depth;
+
+    Ray currRay = r;
+    float3 currAttenuation(1, 1, 1);
+    float3 currLightE(0, 0, 0);
+
+    for (int currDepth = 0; currDepth < kMaxDepth; ++currDepth)
+    {
+        ++inoutRayCount;
+        Hit hit;
+        int id = HitScene(currRay, kMinT, kMaxT, hit);
+        if (id != -1)
+        {
+            // ray hits something in the scene
+            Ray scattered;
+            float3 attenuation;
+            float3 lightE;
+            if (Scatter(currRay, hit, attenuation, scattered, lightE, rngState, inoutRayCount))
+            {
+                currLightE += lightE * currAttenuation;
+                currAttenuation *= attenuation;
+
+                currRay = scattered;
+            }
+            else
+            {
+                // reached recursion limit, or surface fully absorbed the ray: return black
+                return float3(0, 0, 0);
+            }
+        }
+        else
+        {
+            // ray does not hit anything: return illumination from the sky (just a simple gradient really)
+            float3 unitDir = currRay.dir;
+            float t = 0.5f*(unitDir.getY() + 1.0f);
+            float3 c = ((1.0f - t)*float3(1.0f, 1.0f, 1.0f) + t * float3(0.5f, 0.7f, 1.0f)) * 0.5f;
+            return currLightE + currAttenuation * c;
+        }
+    }
+
+    return float3(0, 0, 0); // exceeded recursion
+}
+
+
 // load scene from an .OBJ file
 static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBoundsMax)
 {
@@ -189,7 +236,8 @@ static void TraceImage(TraceData& data)
                 float u = float(x + RandomFloat01(rngState)) * invWidth;
                 float v = float(y + RandomFloat01(rngState)) * invHeight;
                 Ray r = data.camera->GetRay(u, v, rngState);
-                col += Trace(r, 0, rngState, rayCount);
+                //col += Trace(r, 0, rngState, rayCount);
+                col += TraceIterative(r, 0, rngState, rayCount);
             }
             col *= 1.0f / float(data.samplesPerPixel);
 
