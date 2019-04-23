@@ -19,6 +19,11 @@
 #include <omp.h>
 #endif
 
+#ifdef _OPENCL
+#include "external/clbase.h"
+#include "external/CLEW/clew.h"
+#endif
+
 #include <vector>
 #include <numeric>
 
@@ -176,7 +181,7 @@ static float3 TraceIterative(const Ray& r, int depth, uint32_t& rngState, int& i
 
 
 // load scene from an .OBJ file
-static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBoundsMax)
+static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBoundsMax, std::vector<float>& trisFloat4)
 {
     ObjFile objFile;
     if (!objParseFile(objFile, dataFile))
@@ -203,6 +208,25 @@ static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBou
         outBoundsMin = min(outBoundsMin, v0); outBoundsMax = max(outBoundsMax, v0);
         outBoundsMin = min(outBoundsMin, v1); outBoundsMax = max(outBoundsMax, v1);
         outBoundsMin = min(outBoundsMin, v2); outBoundsMax = max(outBoundsMax, v2);
+
+        {
+            // ocl memory helpers
+
+            trisFloat4.emplace_back(tris[i].v0.getX());
+            trisFloat4.emplace_back(tris[i].v0.getY());
+            trisFloat4.emplace_back(tris[i].v0.getZ());
+            trisFloat4.emplace_back(0.0f);
+
+            trisFloat4.emplace_back(tris[i].v1.getX());
+            trisFloat4.emplace_back(tris[i].v1.getY());
+            trisFloat4.emplace_back(tris[i].v1.getZ());
+            trisFloat4.emplace_back(0.0f);
+
+            trisFloat4.emplace_back(tris[i].v2.getX());
+            trisFloat4.emplace_back(tris[i].v2.getY());
+            trisFloat4.emplace_back(tris[i].v2.getZ());
+            trisFloat4.emplace_back(0.0f);
+        }
     }
 
     // add two triangles that are right "under the scene" and covering larger area than the scene
@@ -215,6 +239,40 @@ static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBou
     tris[objTriCount+1].v0 = float3(outBoundsMin.x-extra.x, outBoundsMin.y, outBoundsMax.z+extra.z);
     tris[objTriCount+1].v1 = float3(outBoundsMax.x+extra.x, outBoundsMin.y, outBoundsMax.z+extra.z);
     tris[objTriCount+1].v2 = float3(outBoundsMax.x+extra.x, outBoundsMin.y, outBoundsMin.z-extra.z);
+
+    {
+        // ocl memory helpers
+
+        trisFloat4.emplace_back(tris[objTriCount+0].v0.getX());
+        trisFloat4.emplace_back(tris[objTriCount+0].v0.getY());
+        trisFloat4.emplace_back(tris[objTriCount+0].v0.getZ());
+        trisFloat4.emplace_back(0.0f);
+
+        trisFloat4.emplace_back(tris[objTriCount+0].v1.getX());
+        trisFloat4.emplace_back(tris[objTriCount+0].v1.getY());
+        trisFloat4.emplace_back(tris[objTriCount+0].v1.getZ());
+        trisFloat4.emplace_back(0.0f);
+
+        trisFloat4.emplace_back(tris[objTriCount+0].v2.getX());
+        trisFloat4.emplace_back(tris[objTriCount+0].v2.getY());
+        trisFloat4.emplace_back(tris[objTriCount+0].v2.getZ());
+        trisFloat4.emplace_back(0.0f);
+
+        trisFloat4.emplace_back(tris[objTriCount+1].v0.getX());
+        trisFloat4.emplace_back(tris[objTriCount+1].v0.getY());
+        trisFloat4.emplace_back(tris[objTriCount+1].v0.getZ());
+        trisFloat4.emplace_back(0.0f);
+
+        trisFloat4.emplace_back(tris[objTriCount+1].v1.getX());
+        trisFloat4.emplace_back(tris[objTriCount+1].v1.getY());
+        trisFloat4.emplace_back(tris[objTriCount+1].v1.getZ());
+        trisFloat4.emplace_back(0.0f);
+
+        trisFloat4.emplace_back(tris[objTriCount+1].v2.getX());
+        trisFloat4.emplace_back(tris[objTriCount+1].v2.getY());
+        trisFloat4.emplace_back(tris[objTriCount+1].v2.getZ());
+        trisFloat4.emplace_back(0.0f);
+    }
 
     uint64_t t0 = stm_now();
     InitializeScene(objTriCount + 2, tris);
@@ -281,12 +339,38 @@ static void TraceImage(TraceData& data)
     data.rayCount = std::accumulate(rayCountVec.begin(), rayCountVec.end(), 0);
 }
 
-
 int main(int argc, const char** argv)
 {
+    std::string pngSuffix = "";
+
 #ifdef _OPENMP
+    pngSuffix = "_omp";
+
     int thread_num = omp_get_max_threads();
     printf("omp_get_max_threads: %d\n", thread_num);
+#endif
+
+#ifdef _OPENCL
+    pngSuffix = "_ocl";
+
+    int clewOK = initClew();
+    if (clewOK != 0)
+    {
+        printf("ERROR: initClew() failed\n");
+        return 1;
+    }
+
+    cl_context clContext = 0;
+    cl_command_queue clQueue = 0;
+
+    cl_program clProg = 0;
+    cl_kernel clKernel = 0;
+
+    cl_mem clMImage = 0;
+    cl_mem clMTris = 0;
+
+    OpenCLUtil cl;
+    cl.init();
 #endif
 
     // initialize timer
@@ -320,7 +404,8 @@ int main(int argc, const char** argv)
 
     // load model file and initialize the scene
     float3 sceneMin, sceneMax;
-    if (!LoadScene(argv[4], sceneMin, sceneMax))
+    std::vector<float> triOCLVec;
+    if (!LoadScene(argv[4], sceneMin, sceneMax, triOCLVec))
         return 1;
 
     // place a camera: put it a bit outside scene bounds, looking at the center of it
@@ -337,8 +422,77 @@ int main(int argc, const char** argv)
     // create RGBA image for the result
     uint8_t* image = new uint8_t[screenWidth * screenHeight * 4];
 
-    // generate the image - run TraceImage
-    uint64_t t0 = stm_now();
+#ifdef _OPENCL
+    {
+        cl_uint selectedPlatformIndex;
+        cl_uint selectedDeviceIndex;
+
+        cl_platform_id selectedPlatformID;
+        cl_device_id selectedDeviceID;
+
+        // OpenCL context, device, queue init
+        //cl.selectePlatformDevice_FirstCPU(selectedPlatformIndex, selectedDeviceIndex, selectedPlatformID, selectedDeviceID);
+        cl.selectePlatformDevice_FirstGPU(selectedPlatformIndex, selectedDeviceIndex, selectedPlatformID, selectedDeviceID);
+
+        if (selectedPlatformIndex == -1 || selectedDeviceIndex == -1)
+        {
+            printf("ERROR: could not get proper OpenCL device\n");
+            return 1;
+        }
+        else
+        {
+            printf("OCL Platform: %s\n", cl.platforms[selectedPlatformIndex].platformName.c_str());
+            printf("OCL Device: %s\n", cl.platforms[selectedPlatformIndex].devices[selectedDeviceIndex].deviceName.c_str());
+        }
+        
+        std::vector<cl_context_properties> clContextProps = createContextProps(selectedPlatformID);
+
+        cl_int clStatus = CL_SUCCESS;
+
+        cl_int deviceCount = 1;
+        clContext = clCreateContext(&clContextProps[0], deviceCount, &selectedDeviceID, NULL, NULL, &clStatus);
+        CHECK_CL(clStatus);
+
+        clQueue = clCreateCommandQueue(clContext, selectedDeviceID, 0, &clStatus);
+        CHECK_CL(clStatus);
+
+        // OpenCL kernel/program handling, memory management
+        std::string fileNameCL = "trimeshtracer.cl";
+
+        std::ifstream myfile(fileNameCL.c_str());
+        std::string clProgStr(std::istreambuf_iterator<char>(myfile), (std::istreambuf_iterator<char>()));
+
+        const char* clProgramStr = clProgStr.c_str();
+        size_t clProgramSize = clProgStr.size();
+
+        clProg = clCreateProgramWithSource(clContext, 1, &clProgramStr, &clProgramSize, &clStatus);
+        CHECK_CL(clStatus);
+
+        //clStatus = clBuildProgram(clProg_root, 0, NULL, NULL, NULL, NULL);
+        clStatus = clBuildProgram(clProg, 0, NULL, "-cl-fast-relaxed-math", NULL, NULL);
+        if (clStatus == CL_BUILD_PROGRAM_FAILURE)
+        {
+            size_t buildLogSize = 0;
+            clStatus = clGetProgramBuildInfo(clProg, selectedDeviceID, CL_PROGRAM_BUILD_LOG, 0, NULL, &buildLogSize);
+            CHECK_CL(clStatus);
+
+            char* buildLog = new char[buildLogSize];
+            clStatus = clGetProgramBuildInfo(clProg, selectedDeviceID, CL_PROGRAM_BUILD_LOG, buildLogSize, buildLog, NULL);
+            CHECK_CL(clStatus);
+
+            std::cout << buildLog << std::endl;
+        }
+
+        clKernel = clCreateKernel(clProg, "trace", &clStatus);
+        CHECK_CL(clStatus);
+
+        clMImage = clCreateBuffer(clContext, CL_MEM_READ_ONLY, 4 * screenWidth * screenHeight * sizeof(uint8_t), nullptr, &clStatus);
+        CHECK_CL(clStatus);
+
+        clMTris = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, triOCLVec.size() * sizeof(float), triOCLVec.data(), &clStatus);
+        CHECK_CL(clStatus);
+    }
+#endif
 
     TraceData data;
     data.screenWidth = screenWidth;
@@ -347,18 +501,94 @@ int main(int argc, const char** argv)
     data.image = image;
     data.camera = &camera;
     data.rayCount = 0;
+
+    // generate the image - run TraceImage
+    uint64_t t0 = stm_now();
+
+#ifndef _OPENCL
     TraceImage(data);
+#else
+    {
+        cl_int clStatus = CL_SUCCESS;
+
+        size_t globalWS[3] = { (size_t)(screenWidth), (size_t)(screenHeight), 1 };
+        size_t localWS[3] = { 8, 8, 1 };
+        //size_t* localWS = NULL;
+
+        clStatus |= clSetKernelArg(clKernel, 0, sizeof(cl_mem), (void*)&clMImage);
+        CHECK_CL(clStatus);
+
+        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
+        CHECK_CL(clStatus);
+
+        clStatus = clFinish(clQueue);
+        CHECK_CL(clStatus);
+
+        // skip first api init call
+        t0 = stm_now();
+        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
+        CHECK_CL(clStatus);
+
+        clStatus = clFinish(clQueue);
+        CHECK_CL(clStatus);
+    }
+#endif    
 
     double dt = stm_sec(stm_since(t0));
+    
+#ifdef _OPENCL
+    {
+        cl_int clStatus = CL_SUCCESS;
+
+        clStatus = clEnqueueReadBuffer(clQueue, clMImage, CL_TRUE, 0, screenWidth * screenHeight * 4 * sizeof(uint8_t), image, 0, nullptr, nullptr);
+        CHECK_CL(clStatus);
+    }
+#endif
+
     printf("Rendered scene at %ix%i,%ispp in %.3f s\n", screenWidth, screenHeight, samplesPerPixel, dt);
     printf("- %.1f K Rays, %.1f K Rays/s\n", data.rayCount/1000.0, data.rayCount/1000.0/dt);
 
     // write resulting image as PNG
     stbi_flip_vertically_on_write(1);
-    stbi_write_png("output.png", screenWidth, screenHeight, 4, image, screenWidth*4);
+    stbi_write_png((std::string("output") + pngSuffix + ".png").c_str(), screenWidth, screenHeight, 4, image, screenWidth*4);
 
     // cleanup and exit
     delete[] image;
     CleanupScene();
+
+#ifdef _OPENCL
+    {
+        if (clMImage)
+        {
+            CHECK_CL(clReleaseMemObject(clMImage));
+            clMImage = 0;
+        }
+
+        if (clKernel)
+        {
+            CHECK_CL(clReleaseKernel(clKernel));
+            clKernel = 0;
+        }
+
+        if (clProg)
+        {
+            CHECK_CL(clReleaseProgram(clProg));
+            clProg = 0;
+        }
+
+        if (clQueue)
+        {
+            CHECK_CL(clReleaseCommandQueue(clQueue));
+            clQueue = 0;
+        }
+
+        if (clContext)
+        {
+            CHECK_CL(clReleaseContext(clContext));
+            clContext = 0;
+        }
+    }
+#endif
+
     return 0;
 }
