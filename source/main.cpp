@@ -74,6 +74,27 @@ static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scat
 }
 
 
+// trace a ray into the scene, and return the normal color for it (debug)
+static float3 TraceNormal(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
+{
+    (void)depth;
+
+    ++inoutRayCount;
+    Hit hit;
+    int id = HitScene(r, kMinT, kMaxT, hit);
+    if (id != -1)
+    {
+        // ray hits something in the scene: return world normal
+        return float3(std::abs(hit.normal.getX()), std::abs(hit.normal.getY()), std::abs(hit.normal.getZ()));
+    }
+    else
+    {
+        // ray does not hit anything: return black
+        return float3(0, 0, 0);
+    }
+}
+
+
 // trace a ray into the scene, and return the final color for it
 static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
 {
@@ -237,7 +258,8 @@ static void TraceImage(TraceData& data)
                 float v = float(y + RandomFloat01(rngState)) * invHeight;
                 Ray r = data.camera->GetRay(u, v, rngState);
                 //col += Trace(r, 0, rngState, rayCount);
-                col += TraceIterative(r, 0, rngState, rayCount);
+                //col += TraceIterative(r, 0, rngState, rayCount);
+                col += TraceNormal(r, 0, rngState, rayCount);
             }
             col *= 1.0f / float(data.samplesPerPixel);
 
