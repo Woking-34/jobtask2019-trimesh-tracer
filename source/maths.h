@@ -104,9 +104,9 @@ struct Hit
 // --------------------------------------------------------------------------
 // random number generator utilities
 
-float RandomFloat01(uint32_t& state);
-float3 RandomInUnitDisk(uint32_t& state);
-float3 RandomUnitVector(uint32_t& state);
+float RandomFloat01(unsigned int *seed0, unsigned int *seed1);
+float3 RandomInUnitDisk(unsigned int *seed0, unsigned int *seed1);
+float3 RandomUnitVector(unsigned int *seed0, unsigned int *seed1);
 
 
 // --------------------------------------------------------------------------
@@ -132,9 +132,9 @@ struct Camera
         vertical = 2*halfHeight*focusDist*v;
     }
 
-    Ray GetRay(float s, float t, uint32_t& state) const
+    Ray GetRay(float s, float t, unsigned int *seed0, unsigned int *seed1) const
     {
-        float3 rd = lensRadius * RandomInUnitDisk(state);
+        float3 rd = lensRadius * RandomInUnitDisk(seed0, seed1);
         float3 offset = u * rd.getX() + v * rd.getY();
         return Ray(origin + offset, normalize(lowerLeftCorner + s*horizontal + t*vertical - origin - offset));
     }

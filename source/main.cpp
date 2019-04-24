@@ -47,14 +47,14 @@ static const float3 kLightColor = float3(0.7f,0.6f,0.5f);
 // - surface albedo ("color") in "attenuation"
 // - new random ray for the next light bounce in "scattered"
 // - illumination from the directional light in "outLightE"
-static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scattered, float3& outLightE, uint32_t& rngState, int& inoutRayCount)
+static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scattered, float3& outLightE, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
 {
     outLightE = float3(0,0,0);
 
     // model a perfectly diffuse material:
     
     // random point on unit sphere that is tangent to the hit point
-    float3 target = hit.pos + hit.normal + RandomUnitVector(rngState);
+    float3 target = hit.pos + hit.normal + RandomUnitVector(seed0, seed1);
     scattered = Ray(hit.pos, normalize(target - hit.pos));
     
     // make color slightly based on surface normals
@@ -63,6 +63,7 @@ static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scat
     
     // explicit directional light by shooting a shadow ray
     ++inoutRayCount;
+
     Hit lightHit;
     int id = HitScene(Ray(hit.pos, kLightDir), kMinT, kMaxT, lightHit);
     if (id == -1)
@@ -80,11 +81,12 @@ static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scat
 
 
 // trace a ray into the scene, and return the normal color for it (debug)
-static float3 TraceNormal(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
+static float3 TraceNormal(const Ray& r, int depth, int& inoutRayCount)
 {
     (void)depth;
 
     ++inoutRayCount;
+
     Hit hit;
     int id = HitScene(r, kMinT, kMaxT, hit);
     if (id != -1)
@@ -101,9 +103,10 @@ static float3 TraceNormal(const Ray& r, int depth, uint32_t& rngState, int& inou
 
 
 // trace a ray into the scene, and return the final color for it
-static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
+static float3 Trace(const Ray& r, int depth, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
 {
     ++inoutRayCount;
+
     Hit hit;
     int id = HitScene(r, kMinT, kMaxT, hit);
     if (id != -1)
@@ -112,10 +115,10 @@ static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCo
         Ray scattered;
         float3 attenuation;
         float3 lightE;
-        if (depth < kMaxDepth && Scatter(r, hit, attenuation, scattered, lightE, rngState, inoutRayCount))
+        if (depth < kMaxDepth && Scatter(r, hit, attenuation, scattered, lightE, seed0, seed1, inoutRayCount))
         {
             // we got a new ray bounced from the surface; recursively trace it
-            return lightE + attenuation * Trace(scattered, depth+1, rngState, inoutRayCount);
+            return lightE + attenuation * Trace(scattered, depth+1, seed0, seed1, inoutRayCount);
         }
         else
         {
@@ -134,7 +137,7 @@ static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCo
 
 
 // trace a ray into the scene, and return the final color for it
-static float3 TraceIterative(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
+static float3 TraceIterative(const Ray& r, int depth, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
 {
     (void)depth;
 
@@ -145,6 +148,7 @@ static float3 TraceIterative(const Ray& r, int depth, uint32_t& rngState, int& i
     for (int currDepth = 0; currDepth < kMaxDepth; ++currDepth)
     {
         ++inoutRayCount;
+
         Hit hit;
         int id = HitScene(currRay, kMinT, kMaxT, hit);
         if (id != -1)
@@ -153,7 +157,7 @@ static float3 TraceIterative(const Ray& r, int depth, uint32_t& rngState, int& i
             Ray scattered;
             float3 attenuation;
             float3 lightE;
-            if (Scatter(currRay, hit, attenuation, scattered, lightE, rngState, inoutRayCount))
+            if (Scatter(currRay, hit, attenuation, scattered, lightE, seed0, seed1, inoutRayCount))
             {
                 currLightE += lightE * currAttenuation;
                 currAttenuation *= attenuation;
@@ -285,6 +289,8 @@ static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBou
 struct TraceData
 {
     int screenWidth, screenHeight, samplesPerPixel;
+    std::vector<unsigned int> seed0;
+    std::vector<unsigned int> seed1;
     uint8_t* image;
     const Camera* camera;
     int rayCount;
@@ -303,21 +309,25 @@ static void TraceImage(TraceData& data)
     for (int y = 0; y < data.screenHeight; ++y)
     {
         int rayCount = 0;
+
         // go over the image: each pixel in the row
-        uint32_t rngState = y * 9781 + 1;
         for (int x = 0; x < data.screenWidth; ++x)
         {
+            uint32_t seed0 = data.seed0[x + y * data.screenWidth];
+            uint32_t seed1 = data.seed1[x + y * data.screenWidth];
+
             float3 col(0, 0, 0);
             // we'll trace N slightly jittered rays for each pixel, to get anti-aliasing, loop over them here
             for (int s = 0; s < data.samplesPerPixel; ++s)
             {
                 // get a ray from camera, and trace it
-                float u = float(x + RandomFloat01(rngState)) * invWidth;
-                float v = float(y + RandomFloat01(rngState)) * invHeight;
-                Ray r = data.camera->GetRay(u, v, rngState);
-                //col += Trace(r, 0, rngState, rayCount);
-                //col += TraceIterative(r, 0, rngState, rayCount);
-                col += TraceNormal(r, 0, rngState, rayCount);
+                float u = float(x + RandomFloat01(&seed0, &seed1)) * invWidth;
+                float v = float(y + RandomFloat01(&seed0, &seed1)) * invHeight;
+                Ray r = data.camera->GetRay(u, v, &seed0, &seed1);
+
+                //col += Trace(r, 0, &seed0, &seed1, rayCount);
+                //col += TraceIterative(r, 0, &seed0, &seed1, rayCount);
+                col += TraceNormal(r, 0, rayCount);
             }
             col *= 1.0f / float(data.samplesPerPixel);
 
@@ -338,6 +348,31 @@ static void TraceImage(TraceData& data)
 
     data.rayCount = std::accumulate(rayCountVec.begin(), rayCountVec.end(), 0);
 }
+
+#ifdef _OPENCL
+// file path helper for OpenCL kernel file loading
+bool findFullPath(const std::string& root, std::string& filePath)
+{
+    bool fileFound = false;
+    const std::string resourcePath = root;
+
+    filePath = resourcePath + filePath;
+    for (unsigned int i = 0; i < 16; ++i)
+    {
+        std::ifstream file;
+        file.open(filePath.c_str());
+        if (file.is_open())
+        {
+            fileFound = true;
+            break;
+        }
+
+        filePath = "../" + filePath;
+    }
+
+    return fileFound;
+}
+#endif
 
 int main(int argc, const char** argv)
 {
@@ -368,6 +403,9 @@ int main(int argc, const char** argv)
 
     cl_mem clMImage = 0;
     cl_mem clMTris = 0;
+    cl_mem clMCamera = 0;
+    cl_mem clMSeed0 = 0;
+    cl_mem clMSeed1 = 0;
 
     OpenCLUtil cl;
     cl.init();
@@ -419,6 +457,52 @@ int main(int argc, const char** argv)
     float aperture = 0.03f;
     auto camera = Camera(lookfrom, lookat, float3(0, 1, 0), 60, float(screenWidth) / float(screenHeight), aperture, distToFocus);
 
+    std::vector<float> camOCLVec(8*4, 0.0f);
+    {
+        camOCLVec[ 0] = camera.origin.x;
+        camOCLVec[ 1] = camera.origin.y;
+        camOCLVec[ 2] = camera.origin.z;
+        
+        camOCLVec[ 4] = camera.lowerLeftCorner.x;
+        camOCLVec[ 5] = camera.lowerLeftCorner.y;
+        camOCLVec[ 6] = camera.lowerLeftCorner.z;
+
+        camOCLVec[ 8] = camera.horizontal.x;
+        camOCLVec[ 9] = camera.horizontal.y;
+        camOCLVec[10] = camera.horizontal.z;
+
+        camOCLVec[12] = camera.vertical.x;
+        camOCLVec[13] = camera.vertical.y;
+        camOCLVec[14] = camera.vertical.z;
+
+        camOCLVec[16] = camera.u.x;
+        camOCLVec[17] = camera.u.y;
+        camOCLVec[18] = camera.u.z;
+
+        camOCLVec[20] = camera.v.x;
+        camOCLVec[21] = camera.v.y;
+        camOCLVec[22] = camera.v.z;
+
+        camOCLVec[24] = camera.w.x;
+        camOCLVec[25] = camera.w.y;
+        camOCLVec[26] = camera.w.z;
+
+        camOCLVec[28] = camera.lensRadius;
+        camOCLVec[29] = 0.0f;
+        camOCLVec[30] = 0.0f;
+        camOCLVec[31] = 0.0f;
+    }
+
+    std::vector<unsigned int> seed0OCLVec(screenWidth*screenHeight);
+    std::vector<unsigned int> seed1OCLVec(screenWidth*screenHeight);
+    {
+        for (int i = 0; i < screenWidth*screenHeight; ++i)
+        {
+            seed0OCLVec[i] = rand() % RAND_MAX + 1;
+            seed1OCLVec[i] = rand() % RAND_MAX + 1;
+        }
+    }
+
     // create RGBA image for the result
     uint8_t* image = new uint8_t[screenWidth * screenHeight * 4];
 
@@ -457,9 +541,17 @@ int main(int argc, const char** argv)
         CHECK_CL(clStatus);
 
         // OpenCL kernel/program handling, memory management
-        std::string fileNameCL = "trimeshtracer.cl";
+        std::string rootStr = "data/";
+        std::string filePath = "trimeshtracer.cl";
 
-        std::ifstream myfile(fileNameCL.c_str());
+        bool fileFound = findFullPath(rootStr, filePath);
+        if (fileFound == false)
+        {
+            printf("ERROR: could not find OpenCL kernel file\n");
+            return 1;
+        }
+
+        std::ifstream myfile(filePath.c_str());
         std::string clProgStr(std::istreambuf_iterator<char>(myfile), (std::istreambuf_iterator<char>()));
 
         const char* clProgramStr = clProgStr.c_str();
@@ -491,12 +583,23 @@ int main(int argc, const char** argv)
 
         clMTris = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, triOCLVec.size() * sizeof(float), triOCLVec.data(), &clStatus);
         CHECK_CL(clStatus);
+
+        clMCamera = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, camOCLVec.size() * sizeof(float), camOCLVec.data(), &clStatus);
+        CHECK_CL(clStatus);
+
+        clMSeed0 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), seed0OCLVec.data(), &clStatus);
+        CHECK_CL(clStatus);
+
+        clMSeed1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), seed1OCLVec.data(), &clStatus);
+        CHECK_CL(clStatus);
     }
 #endif
 
     TraceData data;
     data.screenWidth = screenWidth;
     data.screenHeight = screenHeight;
+    data.seed0 = seed0OCLVec;
+    data.seed1 = seed1OCLVec;
     data.samplesPerPixel = samplesPerPixel;
     data.image = image;
     data.camera = &camera;
@@ -511,11 +614,28 @@ int main(int argc, const char** argv)
     {
         cl_int clStatus = CL_SUCCESS;
 
+        cl_int clSamplesPerPixel = samplesPerPixel;
+        cl_int clWidth = screenWidth;
+        cl_int clHeight = screenHeight;
+        cl_float clInvWidth = 1.0f / screenWidth;
+        cl_float clInvHeight = 1.0f / screenHeight;
+        cl_int clTriangleNum = (cl_int)(triOCLVec.size()) / (3*4);
+
         size_t globalWS[3] = { (size_t)(screenWidth), (size_t)(screenHeight), 1 };
         size_t localWS[3] = { 8, 8, 1 };
         //size_t* localWS = NULL;
 
-        clStatus |= clSetKernelArg(clKernel, 0, sizeof(cl_mem), (void*)&clMImage);
+        clStatus |= clSetKernelArg(clKernel,  0, sizeof(cl_int), (void*)&clSamplesPerPixel);
+        clStatus |= clSetKernelArg(clKernel,  1, sizeof(cl_int), (void*)&clWidth);
+        clStatus |= clSetKernelArg(clKernel,  2, sizeof(cl_int), (void*)&clHeight);
+        clStatus |= clSetKernelArg(clKernel,  3, sizeof(cl_float), (void*)&clInvWidth);
+        clStatus |= clSetKernelArg(clKernel,  4, sizeof(cl_float), (void*)&clInvHeight);
+        clStatus |= clSetKernelArg(clKernel,  5, sizeof(cl_int), (void*)&clTriangleNum);
+        clStatus |= clSetKernelArg(clKernel,  6, sizeof(cl_mem), (void*)&clMTris);
+        clStatus |= clSetKernelArg(clKernel,  7, sizeof(cl_mem), (void*)&clMSeed0);
+        clStatus |= clSetKernelArg(clKernel,  8, sizeof(cl_mem), (void*)&clMSeed1);
+        clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMCamera);
+        clStatus |= clSetKernelArg(clKernel, 10, sizeof(cl_mem), (void*)&clMImage);
         CHECK_CL(clStatus);
 
         clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
@@ -562,6 +682,30 @@ int main(int argc, const char** argv)
         {
             CHECK_CL(clReleaseMemObject(clMImage));
             clMImage = 0;
+        }
+
+        if (clMTris)
+        {
+            CHECK_CL(clReleaseMemObject(clMTris));
+            clMTris = 0;
+        }
+
+        if (clMSeed0)
+        {
+            CHECK_CL(clReleaseMemObject(clMSeed0));
+            clMSeed0 = 0;
+        }
+
+        if (clMSeed1)
+        {
+            CHECK_CL(clReleaseMemObject(clMSeed1));
+            clMSeed1 = 0;
+        }
+
+        if (clMCamera)
+        {
+            CHECK_CL(clReleaseMemObject(clMCamera));
+            clMCamera = 0;
         }
 
         if (clKernel)
