@@ -1,3 +1,18 @@
+## New features & additions
+- CMake project & build support
+- OpenMP target for multicore processing
+- OpenCL target for CPU/GPU compute support
+
+## Speed up
+Using the same brute-force "for each ray intersect all triangles" method:
+
+| Target device/platform | suzanne   | speed up |
+| :---:                  | :---:     | :---:    |
+| **i7-6770HQ naive**    | 99.276 s  | x1       |
+| **i7-6770HQ OpenMP**   | 17.163 s  | x5.7     |
+| **i7-6770HQ OpenCL**   | 8.066 s   | x12.3    |
+| **Iris Pro OpenCL**    | 0.480 s   | x206.8   |
+
 # Interview task/assignment: speed up a simple path tracer
 
 This project contains a simple triangle mesh path tracer implemented in C++.

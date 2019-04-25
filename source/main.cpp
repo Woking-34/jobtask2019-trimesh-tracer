@@ -137,10 +137,8 @@ static float3 Trace(const Ray& r, int depth, unsigned int *seed0, unsigned int *
 
 
 // trace a ray into the scene, and return the final color for it
-static float3 TraceIterative(const Ray& r, int depth, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
+static float3 TraceIterative(const Ray& r, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
 {
-    (void)depth;
-
     Ray currRay = r;
     float3 currAttenuation(1, 1, 1);
     float3 currLightE(0, 0, 0);
@@ -325,9 +323,8 @@ static void TraceImage(TraceData& data)
                 float v = float(y + RandomFloat01(&seed0, &seed1)) * invHeight;
                 Ray r = data.camera->GetRay(u, v, &seed0, &seed1);
 
-                //col += Trace(r, 0, &seed0, &seed1, rayCount);
-                //col += TraceIterative(r, 0, &seed0, &seed1, rayCount);
-                col += TraceNormal(r, 0, rayCount);
+                //col += TraceNormal(r, 0, rayCount);
+                col += TraceIterative(r, &seed0, &seed1, rayCount);
             }
             col *= 1.0f / float(data.samplesPerPixel);
 
@@ -560,7 +557,7 @@ int main(int argc, const char** argv)
         clProg = clCreateProgramWithSource(clContext, 1, &clProgramStr, &clProgramSize, &clStatus);
         CHECK_CL(clStatus);
 
-        //clStatus = clBuildProgram(clProg_root, 0, NULL, NULL, NULL, NULL);
+        //clStatus = clBuildProgram(clProg, 0, NULL, NULL, NULL, NULL);
         clStatus = clBuildProgram(clProg, 0, NULL, "-cl-fast-relaxed-math", NULL, NULL);
         if (clStatus == CL_BUILD_PROGRAM_FAILURE)
         {
@@ -644,8 +641,9 @@ int main(int argc, const char** argv)
         clStatus = clFinish(clQueue);
         CHECK_CL(clStatus);
 
-        // skip first api init call
+        // skip first api init calls - "warmup"
         t0 = stm_now();
+
         clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
         CHECK_CL(clStatus);
 

@@ -142,7 +142,8 @@ __constant int kMaxDepth = 10;
 // we have one hardcoded directional light, with this direction and color
 // we need a compile-time constant
 //__constant float3 kLightDir = normalize((float3)(-0.7f,1.0f,0.5f));
-//__constant float3 kLightColor = (float3)(0.7f,0.6f,0.5f);
+__constant float3 kLightDir = (float3)(-0.530668616f, 0.758098066f, 0.379049033f);
+__constant float3 kLightColor = (float3)(0.7f,0.6f,0.5f);
 
 typedef struct
 {
@@ -273,6 +274,98 @@ static inline float3 TraceNormal(int s_TriangleCount, __global const Triangle* r
 	}
 }
 
+// when a ray "r" has just hit a surface at point "hit", decide what to do about it:
+// in our very simple case, we assume the surface is perfectly diffuse, so we'll return:
+// - surface albedo ("color") in "attenuation"
+// - new random ray for the next light bounce in "scattered"
+// - illumination from the directional light in "outLightE"
+static inline bool Scatter(int s_TriangleCount, __global const Triangle* restrict gTriangles, const Ray* r, const Hit* hit, float3* attenuation, Ray* scattered, float3* outLightE, int* inoutRayCount, unsigned int *seed0, unsigned int *seed1)
+{
+	*outLightE = (float3)(0,0,0);
+	
+	// model a perfectly diffuse material:
+	
+	// random point on unit sphere that is tangent to the hit point
+	float3 target = hit->pos + hit->normal + RandomUnitVector(seed0, seed1);
+	*scattered = make_Ray(hit->pos, normalize(target - hit->pos), 0, kMinT, kMaxT);
+	
+	// make color slightly based on surface normals
+	float3 albedo = hit->normal * 0.0f + (float3)(0.7f,0.7f,0.7f);
+	*attenuation = albedo;
+	
+	// explicit directional light by shooting a shadow ray
+	*inoutRayCount = *inoutRayCount + 1;
+	
+	Hit lightHit;
+	Ray lightRay = make_Ray(hit->pos, kLightDir, 0, kMinT, kMaxT);
+	int id = HitScene(s_TriangleCount, gTriangles, &lightRay, &lightHit);
+	if (id == -1)
+	{
+		// ray towards the light did not hit anything in the scene, so
+		// that means we are not in shadow: compute illumination from it
+		float3 rdir = r->direction;
+		float3 nl = dot(hit->normal, rdir) < 0 ? hit->normal : -hit->normal;
+		*outLightE += albedo * kLightColor * (fmax(0.0f, dot(kLightDir, nl)));
+	}
+	
+	return true;
+}
+
+// trace a ray into the scene, and return the final color for it
+static float3 TraceIterative(int s_TriangleCount, __global const Triangle* restrict gTriangles, const Ray* r, int* inoutRayCount, unsigned int *seed0, unsigned int *seed1)
+{
+	Ray currRay;
+	currRay.origin = r->origin;
+	currRay.direction = r->direction;
+	currRay.ray_type = r->ray_type;
+	currRay.tmin = r->tmin;
+	currRay.tmax = r->tmax;
+	
+	float3 currAttenuation = (float3)(1.0f, 1.0f, 1.0f);
+	float3 currLightE = (float3)(0.0f, 0.0f, 0.0f);
+	
+	for (int currDepth = 0; currDepth < kMaxDepth; ++currDepth)
+	{
+		*inoutRayCount = *inoutRayCount + 1;
+		
+		Hit hit;
+		int id = HitScene(s_TriangleCount, gTriangles, &currRay, &hit);
+		if (id != -1)
+		{
+			// ray hits something in the scene
+			Ray scattered;
+			float3 attenuation;
+			float3 lightE;
+			if (Scatter(s_TriangleCount, gTriangles, &currRay, &hit, &attenuation, &scattered, &lightE, inoutRayCount, seed0, seed1))
+			{
+				currLightE += lightE * currAttenuation;
+				currAttenuation *= attenuation;
+				
+				currRay.origin = scattered.origin;
+				currRay.direction = scattered.direction;
+				currRay.ray_type = scattered.ray_type;
+				currRay.tmin = scattered.tmin;
+				currRay.tmax = scattered.tmax;
+			}
+			else
+			{
+				// reached recursion limit, or surface fully absorbed the ray: return black
+				return (float3)(0.0f, 0.0f, 0.0f);
+			}
+		}
+		else
+		{
+			// ray does not hit anything: return illumination from the sky (just a simple gradient really)
+			float3 unitDir = currRay.direction;
+			float t = 0.5f*(unitDir.y + 1.0f);
+			float3 c = ((1.0f - t)*(float3)(1.0f, 1.0f, 1.0f) + t * (float3)(0.5f, 0.7f, 1.0f)) * 0.5f;
+			return currLightE + currAttenuation * c;
+		}
+	}
+	
+	return (float3)(0.0f, 0.0f, 0.0f); // exceeded recursion
+}
+
 __kernel void trace
 (
 	int samplesPerPixel,
@@ -304,18 +397,17 @@ __kernel void trace
 		// get a ray from camera, and trace it
 		float u = (float)(x + RandomFloat01(&seed0, &seed1)) * invWidth;
 		float v = (float)(y + RandomFloat01(&seed0, &seed1)) * invHeight;
-		
-		//u = (float)(x) * invWidth;
-		//v = (float)(y) * invHeight;
-		
 		Ray r = GetRay(&cam, u, v, &seed0, &seed1);
-		col += TraceNormal(triangleNum, gTriangles, &r, &rayCount);
+		
+		//col += TraceNormal(triangleNum, gTriangles, &r, &rayCount);
+		col += TraceIterative(triangleNum, gTriangles, &r, &rayCount, &seed0, &seed1);
 	}
 	col *= 1.0f / (float)(samplesPerPixel);
 	
 	// simplistic "gamma correction" by just taking a square root of the final color
 	col = sqrt(col);
 	
+	// our image is bytes in 0-255 range, turn our floats into them here and write into the image
 	col = clamp(col, (float3)(0.0f,0.0f,0.0f), (float3)(1.0f,1.0f,1.0f));
 	image[x + y * w] = (uchar4)(col.x * 255, col.y * 255, col.z * 255, 255);
 }
