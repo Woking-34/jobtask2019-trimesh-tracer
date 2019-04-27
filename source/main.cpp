@@ -47,14 +47,14 @@ static const float3 kLightColor = float3(0.7f,0.6f,0.5f);
 // - surface albedo ("color") in "attenuation"
 // - new random ray for the next light bounce in "scattered"
 // - illumination from the directional light in "outLightE"
-static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scattered, float3& outLightE, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
+static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scattered, float3& outLightE, uint32_t& rngState, int& inoutRayCount)
 {
     outLightE = float3(0,0,0);
 
     // model a perfectly diffuse material:
     
     // random point on unit sphere that is tangent to the hit point
-    float3 target = hit.pos + hit.normal + RandomUnitVector(seed0, seed1);
+    float3 target = hit.pos + hit.normal + RandomUnitVector(rngState);
     scattered = Ray(hit.pos, normalize(target - hit.pos));
     
     // make color slightly based on surface normals
@@ -81,10 +81,8 @@ static bool Scatter(const Ray& r, const Hit& hit, float3& attenuation, Ray& scat
 
 
 // trace a ray into the scene, and return the normal color for it (debug)
-static float3 TraceNormal(const Ray& r, int depth, int& inoutRayCount)
+static float3 TraceNormal(const Ray& r, int& inoutRayCount)
 {
-    (void)depth;
-
     ++inoutRayCount;
 
     Hit hit;
@@ -103,7 +101,7 @@ static float3 TraceNormal(const Ray& r, int depth, int& inoutRayCount)
 
 
 // trace a ray into the scene, and return the final color for it
-static float3 Trace(const Ray& r, int depth, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
+static float3 Trace(const Ray& r, int depth, uint32_t& rngState, int& inoutRayCount)
 {
     ++inoutRayCount;
 
@@ -115,10 +113,10 @@ static float3 Trace(const Ray& r, int depth, unsigned int *seed0, unsigned int *
         Ray scattered;
         float3 attenuation;
         float3 lightE;
-        if (depth < kMaxDepth && Scatter(r, hit, attenuation, scattered, lightE, seed0, seed1, inoutRayCount))
+        if (depth < kMaxDepth && Scatter(r, hit, attenuation, scattered, lightE, rngState, inoutRayCount))
         {
             // we got a new ray bounced from the surface; recursively trace it
-            return lightE + attenuation * Trace(scattered, depth+1, seed0, seed1, inoutRayCount);
+            return lightE + attenuation * Trace(scattered, depth + 1, rngState, inoutRayCount);
         }
         else
         {
@@ -137,7 +135,7 @@ static float3 Trace(const Ray& r, int depth, unsigned int *seed0, unsigned int *
 
 
 // trace a ray into the scene, and return the final color for it
-static float3 TraceIterative(const Ray& r, unsigned int *seed0, unsigned int *seed1, int& inoutRayCount)
+static float3 TraceIterative(const Ray& r, uint32_t& rngState, int& inoutRayCount)
 {
     Ray currRay = r;
     float3 currAttenuation(1, 1, 1);
@@ -155,7 +153,7 @@ static float3 TraceIterative(const Ray& r, unsigned int *seed0, unsigned int *se
             Ray scattered;
             float3 attenuation;
             float3 lightE;
-            if (Scatter(currRay, hit, attenuation, scattered, lightE, seed0, seed1, inoutRayCount))
+            if (Scatter(currRay, hit, attenuation, scattered, lightE, rngState, inoutRayCount))
             {
                 currLightE += lightE * currAttenuation;
                 currAttenuation *= attenuation;
@@ -287,8 +285,7 @@ static bool LoadScene(const char* dataFile, float3& outBoundsMin, float3& outBou
 struct TraceData
 {
     int screenWidth, screenHeight, samplesPerPixel;
-    std::vector<unsigned int> seed0;
-    std::vector<unsigned int> seed1;
+    std::vector<unsigned int> rngState;
     uint8_t* image;
     const Camera* camera;
     int rayCount;
@@ -311,20 +308,19 @@ static void TraceImage(TraceData& data)
         // go over the image: each pixel in the row
         for (int x = 0; x < data.screenWidth; ++x)
         {
-            uint32_t seed0 = data.seed0[x + y * data.screenWidth];
-            uint32_t seed1 = data.seed1[x + y * data.screenWidth];
+            uint32_t rngState = data.rngState[x + y * data.screenWidth];
 
             float3 col(0, 0, 0);
             // we'll trace N slightly jittered rays for each pixel, to get anti-aliasing, loop over them here
             for (int s = 0; s < data.samplesPerPixel; ++s)
             {
                 // get a ray from camera, and trace it
-                float u = float(x + RandomFloat01(&seed0, &seed1)) * invWidth;
-                float v = float(y + RandomFloat01(&seed0, &seed1)) * invHeight;
-                Ray r = data.camera->GetRay(u, v, &seed0, &seed1);
+                float u = float(x + RandomFloat01(rngState)) * invWidth;
+                float v = float(y + RandomFloat01(rngState)) * invHeight;
+                Ray r = data.camera->GetRay(u, v, rngState);
 
-                //col += TraceNormal(r, 0, rayCount);
-                col += TraceIterative(r, &seed0, &seed1, rayCount);
+                //col += TraceNormal(r, rayCount);
+                col += TraceIterative(r, rngState, rayCount);
             }
             col *= 1.0f / float(data.samplesPerPixel);
 
@@ -401,8 +397,7 @@ int main(int argc, const char** argv)
     cl_mem clMImage = 0;
     cl_mem clMTris = 0;
     cl_mem clMCamera = 0;
-    cl_mem clMSeed0 = 0;
-    cl_mem clMSeed1 = 0;
+    cl_mem clMRngState = 0;
 
     OpenCLUtil cl;
     cl.init();
@@ -490,13 +485,11 @@ int main(int argc, const char** argv)
         camOCLVec[31] = 0.0f;
     }
 
-    std::vector<unsigned int> seed0OCLVec(screenWidth*screenHeight);
-    std::vector<unsigned int> seed1OCLVec(screenWidth*screenHeight);
+    std::vector<unsigned int> rngStateCLVec(screenWidth*screenHeight);
     {
         for (int i = 0; i < screenWidth*screenHeight; ++i)
         {
-            seed0OCLVec[i] = rand() % RAND_MAX + 1;
-            seed1OCLVec[i] = rand() % RAND_MAX + 1;
+            rngStateCLVec[i] = rand() % RAND_MAX + 1;
         }
     }
 
@@ -584,10 +577,7 @@ int main(int argc, const char** argv)
         clMCamera = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, camOCLVec.size() * sizeof(float), camOCLVec.data(), &clStatus);
         CHECK_CL(clStatus);
 
-        clMSeed0 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), seed0OCLVec.data(), &clStatus);
-        CHECK_CL(clStatus);
-
-        clMSeed1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), seed1OCLVec.data(), &clStatus);
+        clMRngState = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), rngStateCLVec.data(), &clStatus);
         CHECK_CL(clStatus);
     }
 #endif
@@ -595,8 +585,7 @@ int main(int argc, const char** argv)
     TraceData data;
     data.screenWidth = screenWidth;
     data.screenHeight = screenHeight;
-    data.seed0 = seed0OCLVec;
-    data.seed1 = seed1OCLVec;
+    data.rngState = rngStateCLVec;
     data.samplesPerPixel = samplesPerPixel;
     data.image = image;
     data.camera = &camera;
@@ -618,7 +607,12 @@ int main(int argc, const char** argv)
         cl_float clInvHeight = 1.0f / screenHeight;
         cl_int clTriangleNum = (cl_int)(triOCLVec.size()) / (3*4);
 
+        //size_t globalWS[3] = { (size_t)(screenWidth) / 2, (size_t)(screenHeight) / 2, 1 };
+        //size_t globalWO[3] = { (size_t)(screenWidth) / 2, (size_t)(screenHeight) / 2, 0 };
+
         size_t globalWS[3] = { (size_t)(screenWidth), (size_t)(screenHeight), 1 };
+        size_t* globalWO = NULL;
+
         size_t localWS[3] = { 8, 8, 1 };
         //size_t* localWS = NULL;
 
@@ -629,13 +623,12 @@ int main(int argc, const char** argv)
         clStatus |= clSetKernelArg(clKernel,  4, sizeof(cl_float), (void*)&clInvHeight);
         clStatus |= clSetKernelArg(clKernel,  5, sizeof(cl_int), (void*)&clTriangleNum);
         clStatus |= clSetKernelArg(clKernel,  6, sizeof(cl_mem), (void*)&clMTris);
-        clStatus |= clSetKernelArg(clKernel,  7, sizeof(cl_mem), (void*)&clMSeed0);
-        clStatus |= clSetKernelArg(clKernel,  8, sizeof(cl_mem), (void*)&clMSeed1);
-        clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMCamera);
-        clStatus |= clSetKernelArg(clKernel, 10, sizeof(cl_mem), (void*)&clMImage);
+        clStatus |= clSetKernelArg(clKernel,  7, sizeof(cl_mem), (void*)&clMRngState);
+        clStatus |= clSetKernelArg(clKernel,  8, sizeof(cl_mem), (void*)&clMCamera);
+        clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMImage);
         CHECK_CL(clStatus);
 
-        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
+        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, globalWO, globalWS, localWS, 0, NULL, NULL);
         CHECK_CL(clStatus);
 
         clStatus = clFinish(clQueue);
@@ -644,7 +637,7 @@ int main(int argc, const char** argv)
         // skip first api init calls - "warmup"
         t0 = stm_now();
 
-        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, NULL, globalWS, localWS, 0, NULL, NULL);
+        clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, globalWO, globalWS, localWS, 0, NULL, NULL);
         CHECK_CL(clStatus);
 
         clStatus = clFinish(clQueue);
@@ -688,16 +681,10 @@ int main(int argc, const char** argv)
             clMTris = 0;
         }
 
-        if (clMSeed0)
+        if (clMRngState)
         {
-            CHECK_CL(clReleaseMemObject(clMSeed0));
-            clMSeed0 = 0;
-        }
-
-        if (clMSeed1)
-        {
-            CHECK_CL(clReleaseMemObject(clMSeed1));
-            clMSeed1 = 0;
+            CHECK_CL(clReleaseMemObject(clMRngState));
+            clMRngState = 0;
         }
 
         if (clMCamera)
