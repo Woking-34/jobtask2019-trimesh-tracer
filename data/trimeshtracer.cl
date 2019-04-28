@@ -28,110 +28,6 @@ static inline Ray make_Ray(float3 origin, float3 direction, unsigned int ray_typ
 	return ray;
 }
 
-/** OptiX SDK 6.0.0 - optixu_math_namespace.h */
-/** Intersect ray with CCW wound triangle. Returns non-normalized normal vector. */
-static inline bool intersect_triangle_branchless
-(
-	const Ray*    ray,
-	const float3* p0,
-	const float3* p1,
-	const float3* p2,
-		  float3* n,
-		  float*  t,
-		  float*  beta,
-		  float*  gamma
-)
-{
-	const float3 e0 = (*p1) - (*p0);
-	const float3 e1 = (*p0) - (*p2);
-	*n  = cross( e1, e0 );
-	
-	const float3 e2 = ( 1.0f / dot( (*n), ray->direction ) ) * ( (*p0) - ray->origin );
-	const float3 i  = cross( ray->direction, e2 );
-	
-	*beta  = dot( i, e1 );
-	*gamma = dot( i, e0 );
-	*t     = dot( *n, e2 );
-	
-	return ( ((*t)<ray->tmax) & ((*t)>ray->tmin) & ((*beta)>=0.0f) & ((*gamma)>=0.0f) & ((*beta)+(*gamma)<=1.0f) );
-}
-
-
-static inline bool intersect_triangle_isinside
-(
-	const Ray*    ray,
-	const float3* p0,
-	const float3* p1,
-	const float3* p2,
-		  float3* n,
-		  float*  t,
-		  float*  beta,
-		  float*  gamma
-)
-{
-	const float3 e1 = (*p1) - (*p0);
-	const float3 e2 = (*p2) - (*p0);
-	*n = normalize(cross( e1, e2 ));
-	*t = dot(*p0 - ray->origin, *n) / dot(ray->direction, *n);
-	
-	if(*t < 0.0f)
-		return false;
-	
-	const float3 p = ray->origin + ray->direction * (*t);
-	
-	*beta = dot(cross(*p2 - *p1, p - *p1), *n);
-	*gamma = dot(cross(*p0 - *p2, p - *p2), *n);
-	
-	return ( ((*t)<ray->tmax) & ((*t)>ray->tmin) & ((*beta)>=0.0f) & ((*gamma)>=0.0f) & ((*beta)+(*gamma)<=1.0f) );
-}
-
-/** Christer Ericson - Real-Time Collision Detection */
-/** Intersect ray with triangle. IntersectLineTriangle - ScalarTriple: dot(cross(u, v), w). */
-static inline bool intersect_triangle_scalartriple
-(
-	const Ray*    ray,
-	const float3* p0,
-	const float3* p1,
-	const float3* p2,
-		  float3* n,
-		  float*  t,
-		  float*  beta,
-		  float*  gamma
-)
-{
-	const float3 e1 = (*p1) - (*p0);
-	const float3 e2 = (*p2) - (*p0);
-	*n = normalize(cross( e1, e2 ));
-	*t = dot(*p0 - ray->origin, *n) / dot(ray->direction, *n);
-	
-	if(*t < 0.0f)
-		return false;
-	
-	const float3 pq = ray->direction;
-	const float3 pa = *p0 - ray->origin;
-	const float3 pb = *p1 - ray->origin;
-	const float3 pc = *p2 - ray->origin;
-	
-	// Test if pq is inside the edges bc, ca and ab. Done by testing
-	// that the signed tetrahedral volumes, computed using scalar triple
-	// products, are all positive
-	float u = dot(cross(pq, pc), pb);
-	if (u < 0.0f) return false;
-	float v = dot(cross(pq, pa), pc);
-	if (v < 0.0f) return false;
-	float w = dot(cross(pq, pb), pa);
-	if (w < 0.0f) return false;
-	
-	// Compute the barycentric coordinates (u, v, w) determining the
-	// intersection point r, r = u*a + v*b + w*c
-	float denom = 1.0f / (u + v + w);
-	
-	*beta = v * denom;
-	*gamma = w * denom;
-	
-	return ( ((*t)<ray->tmax) & ((*t)>ray->tmin) & ((*beta)>=0.0f) & ((*gamma)>=0.0f) & ((*beta)+(*gamma)<=1.0f) );
-}
-
 /** aras-p/jobtask2019-trimesh-tracer */
 // general minimum/maximum distances for rays
 __constant float kMinT = 0.001f;
@@ -240,28 +136,17 @@ static inline float3 RandomInUnitDisk(unsigned int *state)
 		px = 2.0f*RandomFloat01(state) - 1.0f;
 		py = 2.0f*RandomFloat01(state) - 1.0f;
 	} while (px*px + py*py >= 1.0f);
-	
 	return (float3)(px,py,0.0f);
 }
 
 static inline float3 RandomUnitVector(unsigned int *state)
 {
-	float px,py,pz;
-	
-	do {
-		px = 2.0f*RandomFloat01(state) - 1.0f;
-		py = 2.0f*RandomFloat01(state) - 1.0f;
-		pz = 2.0f*RandomFloat01(state) - 1.0f;
-	} while (px*px + py*py + pz*pz >= 1.0f);
-	
-	return (float3)(px,py,pz);
-	
-	//float z = RandomFloat01(state) * 2.0f - 1.0f;
-	//float a = RandomFloat01(state) * 2.0f * M_PI;
-	//float r = sqrt(1.0f - z * z);
-	//float x = r * cosf(a);
-	//float y = r * sinf(a);
-	//return (float3)(x, y, z);
+	float z = RandomFloat01(state) * 2.0f - 1.0f;
+	float a = RandomFloat01(state) * 2.0f * M_PI;
+	float r = sqrt(1.0f - z * z);
+	float x = r * cos(a);
+	float y = r * sin(a);
+	return (float3)(x, y, z);
 }
 
 static inline Ray GetRay(const Camera* cam, float s, float t, unsigned int *state)
@@ -286,9 +171,6 @@ int HitScene(int s_TriangleCount, __global const Triangle* restrict gTriangles, 
 		float3 v2 = gTriangles[i].v2.xyz;
 		
 		//if (HitTriangle(r, s_Triangles[i], tMin, tMax, hit))
-		//if (intersect_triangle_branchless(r, &v0, &v1, &v2, &n, &t, &beta, &gamma))
-		//if (intersect_triangle_isinside(r, &v0, &v1, &v2, &n, &t, &beta, &gamma))
-		//if (intersect_triangle_scalartriple(r, &v0, &v1, &v2, &n, &t, &beta, &gamma))
 		if (intersect_triangle_raysegment(r, &v0, &v1, &v2, &n, &t, &beta, &gamma))
 		{
 			if (t < hitMinT)

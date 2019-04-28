@@ -369,17 +369,18 @@ bool findFullPath(const std::string& root, std::string& filePath)
 
 int main(int argc, const char** argv)
 {
-    std::string pngSuffix = "";
+    std::string pngModelName = "";
+    std::string pngAPIName = "";
 
 #ifdef _OPENMP
-    pngSuffix = "_omp";
+    pngAPIName = "_omp";
 
     int thread_num = omp_get_max_threads();
     printf("omp_get_max_threads: %d\n", thread_num);
 #endif
 
 #ifdef _OPENCL
-    pngSuffix = "_ocl";
+    pngAPIName = "_ocl";
 
     int clewOK = initClew();
     if (clewOK != 0)
@@ -437,6 +438,16 @@ int main(int argc, const char** argv)
     std::vector<float> triOCLVec;
     if (!LoadScene(argv[4], sceneMin, sceneMax, triOCLVec))
         return 1;
+
+    {
+        std::size_t found0 = std::string(argv[4]).find_last_of("/\\");
+        std::size_t found1 = std::string(argv[4]).find_last_of(".\\");
+
+        if ((found0 != std::string::npos) && (found1 != std::string::npos))
+        {
+            pngModelName = std::string("_") + std::string(argv[4]).substr(found0 + 1, found1 - found0 - 1);
+        }
+    }
 
     // place a camera: put it a bit outside scene bounds, looking at the center of it
     float3 sceneSize = sceneMax - sceneMin;
@@ -661,7 +672,7 @@ int main(int argc, const char** argv)
 
     // write resulting image as PNG
     stbi_flip_vertically_on_write(1);
-    stbi_write_png((std::string("output") + pngSuffix + ".png").c_str(), screenWidth, screenHeight, 4, image, screenWidth*4);
+    stbi_write_png((std::string("output") + pngModelName + pngAPIName + ".png").c_str(), screenWidth, screenHeight, 4, image, screenWidth*4);
 
     // cleanup and exit
     delete[] image;
