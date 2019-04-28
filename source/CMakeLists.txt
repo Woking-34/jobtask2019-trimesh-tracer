@@ -49,4 +49,7 @@ target_include_directories(trimeshtracer_ocl
 		${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 
-set_target_properties( trimeshtracer_ocl PROPERTIES COMPILE_DEFINITIONS "_OPENCL" )
+set_target_properties(trimeshtracer_ocl PROPERTIES COMPILE_DEFINITIONS "_OPENCL")
+IF(UNIX AND NOT APPLE)
+	target_link_libraries(trimeshtracer_ocl dl)
+ENDIF(UNIX AND NOT APPLE)

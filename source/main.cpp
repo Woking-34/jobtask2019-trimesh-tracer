@@ -24,6 +24,7 @@
 #include "external/CLEW/clew.h"
 #endif
 
+#include <string>
 #include <vector>
 #include <numeric>
 
