@@ -400,6 +400,7 @@ int main(int argc, const char** argv)
     cl_mem clMTris = 0;
     cl_mem clMCamera = 0;
     cl_mem clMRngState = 0;
+    cl_mem clMRayCount = 0;
 
     OpenCLUtil cl;
     cl.init();
@@ -504,6 +505,7 @@ int main(int argc, const char** argv)
             rngStateCLVec[i] = rand() % RAND_MAX + 1;
         }
     }
+    std::vector<int> rayCountCLVec(screenWidth*screenHeight, 0);
 
     // create RGBA image for the result
     uint8_t* image = new uint8_t[screenWidth * screenHeight * 4];
@@ -591,6 +593,9 @@ int main(int argc, const char** argv)
 
         clMRngState = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(unsigned int), rngStateCLVec.data(), &clStatus);
         CHECK_CL(clStatus);
+
+        clMRayCount = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, screenWidth * screenHeight * sizeof(int), rayCountCLVec.data(), &clStatus);
+        CHECK_CL(clStatus);
     }
 #endif
 
@@ -637,7 +642,8 @@ int main(int argc, const char** argv)
         clStatus |= clSetKernelArg(clKernel,  6, sizeof(cl_mem), (void*)&clMTris);
         clStatus |= clSetKernelArg(clKernel,  7, sizeof(cl_mem), (void*)&clMRngState);
         clStatus |= clSetKernelArg(clKernel,  8, sizeof(cl_mem), (void*)&clMCamera);
-        clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMImage);
+        clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMRayCount);
+        clStatus |= clSetKernelArg(clKernel, 10, sizeof(cl_mem), (void*)&clMImage);
         CHECK_CL(clStatus);
 
         clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, globalWO, globalWS, localWS, 0, NULL, NULL);
@@ -665,6 +671,11 @@ int main(int argc, const char** argv)
 
         clStatus = clEnqueueReadBuffer(clQueue, clMImage, CL_TRUE, 0, screenWidth * screenHeight * 4 * sizeof(uint8_t), image, 0, nullptr, nullptr);
         CHECK_CL(clStatus);
+
+        clStatus = clEnqueueReadBuffer(clQueue, clMRayCount, CL_TRUE, 0, screenWidth * screenHeight *  sizeof(int), rayCountCLVec.data(), 0, nullptr, nullptr);
+        CHECK_CL(clStatus);
+
+        data.rayCount = std::accumulate(rayCountCLVec.begin(), rayCountCLVec.end(), 0);
     }
 #endif
 
@@ -699,6 +710,12 @@ int main(int argc, const char** argv)
             clMRngState = 0;
         }
 
+        if (clMRayCount)
+        {
+            CHECK_CL(clReleaseMemObject(clMRayCount));
+            clMRayCount = 0;
+        }
+        
         if (clMCamera)
         {
             CHECK_CL(clReleaseMemObject(clMCamera));
