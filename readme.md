@@ -1,17 +1,26 @@
 ## New features & additions
 - CMake project & build support
 - OpenMP target for multicore processing
-- OpenCL target for CPU/GPU compute support
+- OpenCL target for CPU/GPU compute
 
 ## Speed up
-Using the same brute-force "for each ray intersect all triangles" method:
+Using the same brute-force "for each ray intersect all triangles" method.
+
+Path tracing performance numbers - 640 360 4 suzanne.obj:
 
 | Target device/platform | suzanne   | speed up |
 | :---:                  | :---:     | :---:    |
-| **i7-6770HQ naive**    | 99.276 s  | x1       |
-| **i7-6770HQ OpenMP**   | 17.163 s  | x5.7     |
-| **i7-6770HQ OpenCL**   | 8.066 s   | x12.3    |
-| **Iris Pro OpenCL**    | 0.480 s   | x206.8   |
+| **i7-6770HQ naive**    | 93.126 s  | x1       |
+| **i7-6770HQ OpenMP**   | 16.973 s  | x5.4     |
+| **i7-6770HQ OpenCL**   | 8.562 s   | x10.8    |
+| **Iris Pro OpenCL**    | 0.570 s   | x163     |
+| **GTX 1080 Ti OpenCL** | 0.151 s   | x616     |
+
+## Todos
+ - Faster ray-triangle intersection test
+ - OpenCL BVH traversal
+ - OptiX 6.0 backend / RTX support
+ - SYCL backend
 
 # Interview task/assignment: speed up a simple path tracer
 

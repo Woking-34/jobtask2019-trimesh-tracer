@@ -163,8 +163,8 @@ static float3 TraceIterative(const Ray& r, uint32_t& rngState, int& inoutRayCoun
             }
             else
             {
-                // reached recursion limit, or surface fully absorbed the ray: return black
-                return float3(0, 0, 0);
+                // reached recursion limit, or surface fully absorbed the ray: return gathered
+                return currLightE;
             }
         }
         else
@@ -177,7 +177,7 @@ static float3 TraceIterative(const Ray& r, uint32_t& rngState, int& inoutRayCoun
         }
     }
 
-    return float3(0, 0, 0); // exceeded recursion
+    return currLightE; // exceeded recursion
 }
 
 
