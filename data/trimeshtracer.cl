@@ -308,7 +308,8 @@ __kernel void trace
 	__global unsigned int* restrict gRngState,
 	__global const Camera* restrict gCamera,
 	__global int* restrict gRayCount,
-	__global uchar4* restrict image
+	__global uchar4* restrict imageU8,
+	__global float4* restrict imageF32
 )
 {
 	int x = get_global_id(0);
@@ -339,7 +340,9 @@ __kernel void trace
 	
 	// our image is bytes in 0-255 range, turn our floats into them here and write into the image
 	col = clamp(col, (float3)(0.0f,0.0f,0.0f), (float3)(1.0f,1.0f,1.0f));
-	image[x + y * width] = (uchar4)(col.x * 255, col.y * 255, col.z * 255, 255);
+	
+	imageU8[x + y * width] = (uchar4)(col.x * 255, col.y * 255, col.z * 255, 255);
+	imageF32[x + y * width] = (float4)(col.x, col.y, col.z, 1.0f);
 	
 	gRayCount[x + y * width] = rayCount;
 }

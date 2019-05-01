@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 #include <numeric>
+#include <fstream>
 
 // --------------------------------------------------------------------------
 // "ray/path tracing" bits
@@ -41,6 +42,37 @@ const int kMaxDepth = 10;
 // we have one hardcoded directional light, with this direction and color
 static const float3 kLightDir = normalize(float3(-0.7f,1.0f,0.5f));
 static const float3 kLightColor = float3(0.7f,0.6f,0.5f);
+
+// OpenImageDenoise - image_io.cpp
+void saveImagePFM(const std::string& filename, float* image, int w, int h, int c)
+{
+    const int H = h;
+    const int W = w;
+    const int C = c;
+
+    // Open the file
+    std::ofstream file(filename, std::ios::binary);
+    if (file.fail())
+        throw std::runtime_error("cannot open file: '" + filename + "'");
+
+    // Write the header
+    file << "PF" << std::endl;
+    file << W << " " << H << std::endl;
+    file << "-1.0" << std::endl;
+
+    // Write the pixels
+    for (int h = 0; h < H; ++h)
+    {
+        for (int w = 0; w < W; ++w)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                const float x = image[((H - 1 - h)*W + w) * C + c];
+                file.write((char*)&x, sizeof(float));
+            }
+        }
+    }
+}
 
 
 // when a ray "r" has just hit a surface at point "hit", decide what to do about it:
@@ -287,14 +319,16 @@ struct TraceData
 {
     int screenWidth, screenHeight, samplesPerPixel;
     std::vector<unsigned int> rngState;
-    uint8_t* image;
+    uint8_t* imageU8;
+    float* imageF32;
     const Camera* camera;
     int rayCount;
 };
 
 static void TraceImage(TraceData& data)
 {
-    uint8_t* image = data.image;
+    uint8_t* imageU8 = data.imageU8;
+    float* imageF32 = data.imageF32;
     float invWidth = 1.0f / data.screenWidth;
     float invHeight = 1.0f / data.screenHeight;
 
@@ -330,12 +364,17 @@ static void TraceImage(TraceData& data)
             col.y = sqrtf(col.y);
             col.z = sqrtf(col.z);
 
-            // our image is bytes in 0-255 range, turn our floats into them here and write into the image
             int index = x * 4 + data.screenWidth * 4 * y;
-            image[index + 0] = uint8_t(saturate(col.x) * 255.0f);
-            image[index + 1] = uint8_t(saturate(col.y) * 255.0f);
-            image[index + 2] = uint8_t(saturate(col.z) * 255.0f);
-            image[index + 3] = 255;
+
+            imageU8[index + 0] = uint8_t(saturate(col.x) * 255.0f);
+            imageU8[index + 1] = uint8_t(saturate(col.y) * 255.0f);
+            imageU8[index + 2] = uint8_t(saturate(col.z) * 255.0f);
+            imageU8[index + 3] = 255;
+
+            imageF32[index + 0] = saturate(col.x);
+            imageF32[index + 1] = saturate(col.y);
+            imageF32[index + 2] = saturate(col.z);
+            imageF32[index + 3] = 1.0f;
         }
         rayCountVec[y] = rayCount;
     }
@@ -396,7 +435,8 @@ int main(int argc, const char** argv)
     cl_program clProg = 0;
     cl_kernel clKernel = 0;
 
-    cl_mem clMImage = 0;
+    cl_mem clMImageU8 = 0;
+    cl_mem clMImageF32 = 0;
     cl_mem clMTris = 0;
     cl_mem clMCamera = 0;
     cl_mem clMRngState = 0;
@@ -508,7 +548,8 @@ int main(int argc, const char** argv)
     std::vector<int> rayCountCLVec(screenWidth*screenHeight, 0);
 
     // create RGBA image for the result
-    uint8_t* image = new uint8_t[screenWidth * screenHeight * 4];
+    uint8_t* imageU8 = new uint8_t[screenWidth * screenHeight * 4];
+    float* imageF32 = new float[screenWidth * screenHeight * 4];
 
 #ifdef _OPENCL
     {
@@ -582,7 +623,10 @@ int main(int argc, const char** argv)
         clKernel = clCreateKernel(clProg, "trace", &clStatus);
         CHECK_CL(clStatus);
 
-        clMImage = clCreateBuffer(clContext, CL_MEM_READ_ONLY, 4 * screenWidth * screenHeight * sizeof(uint8_t), nullptr, &clStatus);
+        clMImageU8 = clCreateBuffer(clContext, CL_MEM_READ_ONLY, 4 * screenWidth * screenHeight * sizeof(uint8_t), nullptr, &clStatus);
+        CHECK_CL(clStatus);
+
+        clMImageF32 = clCreateBuffer(clContext, CL_MEM_READ_ONLY, 4 * screenWidth * screenHeight * sizeof(float), nullptr, &clStatus);
         CHECK_CL(clStatus);
 
         clMTris = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, triOCLVec.size() * sizeof(float), triOCLVec.data(), &clStatus);
@@ -604,7 +648,8 @@ int main(int argc, const char** argv)
     data.screenHeight = screenHeight;
     data.rngState = rngStateCLVec;
     data.samplesPerPixel = samplesPerPixel;
-    data.image = image;
+    data.imageU8 = imageU8;
+    data.imageF32 = imageF32;
     data.camera = &camera;
     data.rayCount = 0;
 
@@ -643,7 +688,8 @@ int main(int argc, const char** argv)
         clStatus |= clSetKernelArg(clKernel,  7, sizeof(cl_mem), (void*)&clMRngState);
         clStatus |= clSetKernelArg(clKernel,  8, sizeof(cl_mem), (void*)&clMCamera);
         clStatus |= clSetKernelArg(clKernel,  9, sizeof(cl_mem), (void*)&clMRayCount);
-        clStatus |= clSetKernelArg(clKernel, 10, sizeof(cl_mem), (void*)&clMImage);
+        clStatus |= clSetKernelArg(clKernel, 10, sizeof(cl_mem), (void*)&clMImageU8);
+        clStatus |= clSetKernelArg(clKernel, 11, sizeof(cl_mem), (void*)&clMImageF32);
         CHECK_CL(clStatus);
 
         clStatus = clEnqueueNDRangeKernel(clQueue, clKernel, 2, globalWO, globalWS, localWS, 0, NULL, NULL);
@@ -669,7 +715,10 @@ int main(int argc, const char** argv)
     {
         cl_int clStatus = CL_SUCCESS;
 
-        clStatus = clEnqueueReadBuffer(clQueue, clMImage, CL_TRUE, 0, screenWidth * screenHeight * 4 * sizeof(uint8_t), image, 0, nullptr, nullptr);
+        clStatus = clEnqueueReadBuffer(clQueue, clMImageU8, CL_TRUE, 0, screenWidth * screenHeight * 4 * sizeof(uint8_t), imageU8, 0, nullptr, nullptr);
+        CHECK_CL(clStatus);
+
+        clStatus = clEnqueueReadBuffer(clQueue, clMImageF32, CL_TRUE, 0, screenWidth * screenHeight * 4 * sizeof(float), imageF32, 0, nullptr, nullptr);
         CHECK_CL(clStatus);
 
         clStatus = clEnqueueReadBuffer(clQueue, clMRayCount, CL_TRUE, 0, screenWidth * screenHeight *  sizeof(int), rayCountCLVec.data(), 0, nullptr, nullptr);
@@ -684,18 +733,27 @@ int main(int argc, const char** argv)
 
     // write resulting image as PNG
     stbi_flip_vertically_on_write(1);
-    stbi_write_png((std::string("output") + pngModelName + pngAPIName + ".png").c_str(), screenWidth, screenHeight, 4, image, screenWidth*4);
+    stbi_write_png((std::string("output") + pngModelName + pngAPIName + ".png").c_str(), screenWidth, screenHeight, 4, imageU8, screenWidth*4);
+
+    saveImagePFM((std::string("output") + pngModelName + pngAPIName + ".pfm"), imageF32, screenWidth, screenHeight, 4);
 
     // cleanup and exit
-    delete[] image;
+    delete[] imageU8;
+    delete[] imageF32;
     CleanupScene();
 
 #ifdef _OPENCL
     {
-        if (clMImage)
+        if (clMImageU8)
         {
-            CHECK_CL(clReleaseMemObject(clMImage));
-            clMImage = 0;
+            CHECK_CL(clReleaseMemObject(clMImageU8));
+            clMImageU8 = 0;
+        }
+        
+        if (clMImageF32)
+        {
+            CHECK_CL(clReleaseMemObject(clMImageF32));
+            clMImageF32 = 0;
         }
 
         if (clMTris)
